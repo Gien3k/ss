@@ -1,0 +1,9 @@
+# Wirtualne środowisko Pythona
+venv/
+__pycache__/
+
+# Zależności projektu Node.js
+node_modules/
+
+# Pliki systemowe
+.DS_Store
