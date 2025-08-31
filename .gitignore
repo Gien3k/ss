@@ -4,6 +4,12 @@ __pycache__/
 
 # Zależności projektu Node.js
 node_modules/
+dist/
 
 # Pliki systemowe
 .DS_Store
+
+# Pliki środowiskowe (SEKRETY) - BARDZO WAŻNE
+.env
+.env.*
+*.env
