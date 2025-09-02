@@ -1,12 +1,13 @@
 # core/models.py
-from sqlalchemy import Column, Integer, String, Table, ForeignKey, Text, JSON, DateTime, Enum
-from sqlalchemy.orm import relationship, backref
-from sqlalchemy.sql import func
+from sqlalchemy import (Column, Integer, String, Table, ForeignKey, Text, JSON, 
+                        DateTime, Enum as SQLAlchemyEnum, Index, func)
+from sqlalchemy.orm import relationship
 from pgvector.sqlalchemy import Vector
+from sqlalchemy.dialects.postgresql import TSVECTOR
 from .database import Base
 import enum
 
-# ... (reszta pliku, CandidateStatusEnum, tabele pośredniczące... bez zmian) ...
+# --- Enumy ---
 class CandidateStatusEnum(enum.Enum):
     new = "Nowy"
     screening = "Screening"
@@ -15,10 +16,12 @@ class CandidateStatusEnum(enum.Enum):
     hired = "Zatrudniony"
     rejected = "Odrzucony"
 
+# --- Tabele Pośredniczące (Many-to-Many) ---
+
 project_candidates_table = Table('project_candidates', Base.metadata,
     Column('project_id', Integer, ForeignKey('recruitment_projects.id'), primary_key=True),
     Column('user_id', Integer, ForeignKey('users.id'), primary_key=True),
-    Column('status', Enum(CandidateStatusEnum, native_enum=False), default=CandidateStatusEnum.new, nullable=False),
+    Column('status', SQLAlchemyEnum(CandidateStatusEnum, native_enum=False), default=CandidateStatusEnum.new, nullable=False),
     Column('notes', Text, nullable=True),
     Column('added_at', DateTime(timezone=True), server_default=func.now())
 )
@@ -28,6 +31,7 @@ user_skills_table = Table('user_skills', Base.metadata,
     Column('skill_id', Integer, ForeignKey('skills.id'), primary_key=True)
 )
 
+# --- Główne Modele ---
 
 class User(Base):
     __tablename__ = "users"
@@ -39,26 +43,34 @@ class User(Base):
     linkedin_url = Column(String, nullable=True)
     github_url = Column(String, nullable=True)
     ai_summary = Column(Text, nullable=True)
-    embedding = Column(Vector(1536), nullable=True)
+    embedding = Column(Vector(1536), nullable=True) # Wymiar dla text-embedding-ada-002
     cv_filepath = Column(String, nullable=True)
     cv_file_hash = Column(String, unique=True, index=True, nullable=True)
     other_data = Column(JSON, nullable=True)
+    
+    # NOWOŚĆ: Kolumna TSVECTOR dla Full-Text Search
+    tsvector_col = Column(TSVECTOR, nullable=True)
 
-    skills = relationship("Skill", secondary=user_skills_table, back_populates="users")
-    work_experiences = relationship("WorkExperience", back_populates="user", cascade="all, delete-orphan")
-    education_history = relationship("Education", back_populates="user", cascade="all, delete-orphan")
-    projects = relationship("Project", back_populates="user", cascade="all, delete-orphan")
-    languages = relationship("Language", back_populates="user", cascade="all, delete-orphan")
-    publications = relationship("Publication", back_populates="user", cascade="all, delete-orphan")
-    certifications = relationship("Certification", back_populates="user", cascade="all, delete-orphan")
+    # Relacje ze zoptymalizowaną strategią ładowania 'selectin'
+    skills = relationship("Skill", secondary=user_skills_table, back_populates="users", lazy="selectin")
+    work_experiences = relationship("WorkExperience", back_populates="user", cascade="all, delete-orphan", lazy="selectin")
+    education_history = relationship("Education", back_populates="user", cascade="all, delete-orphan", lazy="selectin")
+    projects = relationship("Project", back_populates="user", cascade="all, delete-orphan", lazy="selectin")
+    languages = relationship("Language", back_populates="user", cascade="all, delete-orphan", lazy="selectin")
+    publications = relationship("Publication", back_populates="user", cascade="all, delete-orphan", lazy="selectin")
+    certifications = relationship("Certification", back_populates="user", cascade="all, delete-orphan", lazy="selectin")
     recruitment_projects = relationship("RecruitmentProject", secondary=project_candidates_table, back_populates="candidates")
+
+    # NOWOŚĆ: Indeks GIN dla kolumny TSVECTOR - kluczowy dla wydajności FTS
+    __table_args__ = (
+        Index('ix_users_tsvector_col', tsvector_col, postgresql_using='gin'),
+    )
 
 class Skill(Base):
     __tablename__ = "skills"
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, unique=True, index=True)
     users = relationship("User", secondary=user_skills_table, back_populates="skills")
-
 
 class WorkExperience(Base):
     __tablename__ = "work_experience"
@@ -68,11 +80,10 @@ class WorkExperience(Base):
     start_date = Column(String, nullable=True)
     end_date = Column(String, nullable=True)
     description = Column(Text, nullable=True)
-    technologies_used = Column(JSON, nullable=True) # <-- DODANA BRAKUJĄCA KOLUMNA
+    technologies_used = Column(JSON, nullable=True)
     user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
     user = relationship("User", back_populates="work_experiences")
 
-# ... (reszta modeli: Education, Project, etc. bez zmian) ...
 class Education(Base):
     __tablename__ = "education"
     id = Column(Integer, primary_key=True, index=True)
@@ -124,17 +135,3 @@ class RecruitmentProject(Base):
     description = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     candidates = relationship("User", secondary=project_candidates_table, back_populates="recruitment_projects")
-
-class CVCache(Base):
-    __tablename__ = "cv_cache"
-    id = Column(Integer, primary_key=True, index=True)
-    file_hash = Column(String, unique=True, index=True, nullable=False)
-    parsed_data = Column(JSON, nullable=False)
-
-class SearchFeedback(Base):
-    __tablename__ = "search_feedback"
-    id = Column(Integer, primary_key=True, index=True)
-    query = Column(Text, nullable=False)
-    rated_user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
-    rating = Column(String, nullable=False)
-    timestamp = Column(DateTime(timezone=True), server_default=func.now())
